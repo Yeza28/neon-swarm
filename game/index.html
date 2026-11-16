@@ -1,0 +1,32 @@
+<!doctype html>
+<!-- Neon Swarm: an original neon arena survival shooter. Fly with WASD, aim with the mouse, dash through danger, chain kills for a ×9 combo, and bring down the Dreadnought every fifth wave. Plain static files, no network, no libraries. -->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon Swarm — a neon arena survival shooter</title>
+<style>
+  html, body { margin: 0; padding: 0; background: #04050d; min-height: 100%; }
+  body {
+    display: flex; align-items: center; justify-content: center;
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; color: #8fa3cc;
+  }
+  #stage { text-align: center; padding: 18px 10px 12px; }
+  canvas#game {
+    width: min(96vw, 106vh * 1.5); max-width: 1100px; aspect-ratio: 3 / 2; height: auto;
+    background: #05060f; border-radius: 10px; cursor: crosshair;
+    box-shadow: 0 0 44px rgba(87, 247, 255, 0.16), 0 0 120px rgba(255, 61, 94, 0.10);
+    touch-action: none;
+  }
+  #hint { font-size: 12px; letter-spacing: 0.08em; margin: 12px 0 0; }
+  #hint b { color: #57f7ff; font-weight: 700; }
+</style>
+</head>
+<body>
+<main id="stage">
+  <canvas id="game" width="960" height="640"></canvas>
+  <p id="hint"><b>NEON SWARM</b> · WASD fly · mouse aim · hold click to fire · SHIFT dash · P pause · M mute</p>
+</main>
+<script type="module" src="./src/main.js"></script>
+</body>
+</html>
