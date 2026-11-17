@@ -4,6 +4,7 @@
 // frozen for the screenshot. shots.json names the four scenes and their files.
 
 import { createWorld, startRun, stepWorld, addScoreText, GameState } from './world.js';
+import { ARENA, PLAYER } from './config.js';
 
 // A simple autopilot: keep range from the nearest foe, circle it, keep firing.
 function botInput(world) {
@@ -64,9 +65,16 @@ function busiestMoment(seed, seconds) {
   while (step < total && probe.state === GameState.PLAYING) {
     stepWorld(probe, botInput(probe), 1 / 60);
     step += 1;
-    if (step % 20 === 0) {
+    // Boss-wave moments are the boss scene's job, never this one's: a ring
+    // burst would win the density score and steal the Dreadnought's shot.
+    if (step % 20 === 0 && !probe.enemies.some((e) => e.kind === 'boss')) {
+      const kinds = new Set(probe.enemies.map((e) => e.kind)).size;
       const density =
-        probe.enemies.length * 3 + probe.bullets.length + probe.enemyBullets.length * 2 + Math.min(24, probe.particles.length) / 2;
+        probe.enemies.length * 3 +
+        probe.bullets.length +
+        probe.enemyBullets.length * 2 +
+        Math.min(24, probe.particles.length) / 2 +
+        kinds * 4;
       if (density > bestScore) {
         bestScore = density;
         bestStep = step;
@@ -99,25 +107,140 @@ function stageExplosion(world, x, y, color) {
   }
 }
 
-function stagePlay(seed) {
-  const world = busiestMoment(seed, 18) ?? busiestMoment(seed + 1000, 18);
-  if (!world || world.state !== GameState.PLAYING) return stagePlay(seed + 31);
-  // Dress the frame: a foe blowing up near the action, a floating score, a live
-  // combo, the shield ring up, and a power-up waiting on the field.
+// The foe stats the staged scenes place by hand, mirroring world.js's own
+// table, so a hand-placed foe is exactly the foe the simulation would spawn.
+const STAGED_STATS = {
+  chaser: { hp: 3, speed: 118, radius: 15, score: 50 },
+  weaver: { hp: 2, speed: 148, radius: 13, score: 70 },
+  splitter: { hp: 5, speed: 82, radius: 19, score: 90 },
+  mini: { hp: 1, speed: 168, radius: 9, score: 25 },
+  stinger: { hp: 1, speed: 205, radius: 10, score: 40 },
+};
+
+function clampToArena(v, lo, hi) {
+  return v < lo ? lo : v > hi ? hi : v;
+}
+
+function stagedFoe(world, kind, x, y, vx, vy) {
+  const st = STAGED_STATS[kind];
+  return {
+    kind,
+    x,
+    y,
+    vx,
+    vy,
+    radius: st.radius,
+    hp: st.hp,
+    maxHp: st.hp,
+    speed: st.speed,
+    score: st.score,
+    t: world.rng.range(0, Math.PI * 2),
+    flash: 0,
+    ambient: false,
+    attackTimer: 1.5,
+  };
+}
+
+// Press extra foes in around the player until the frame holds targetCount of
+// them: mixed kinds on a ring, far enough to read as a swarm closing in,
+// never stacked on another foe or on the ship.
+function stageReinforcements(world, targetCount) {
   const p = world.player;
-  const near = world.enemies
+  const kinds = ['weaver', 'splitter', 'stinger', 'chaser', 'mini', 'weaver', 'stinger', 'splitter'];
+  let placed = 0;
+  let guard = 0;
+  while (world.enemies.length < targetCount && guard < 48) {
+    guard += 1;
+    const kind = kinds[placed % kinds.length];
+    const st = STAGED_STATS[kind];
+    const ang = (placed / targetCount) * Math.PI * 2 + world.rng.range(-0.3, 0.3);
+    const ring = world.rng.range(200, 330);
+    placed += 1;
+    const x = clampToArena(p.x + Math.cos(ang) * ring, ARENA.wall + st.radius + 6, ARENA.width - ARENA.wall - st.radius - 6);
+    const y = clampToArena(p.y + Math.sin(ang) * ring, ARENA.wall + st.radius + 6, ARENA.height - ARENA.wall - st.radius - 6);
+    if (Math.hypot(x - p.x, y - p.y) < 130) continue;
+    if (world.enemies.some((e) => Math.hypot(e.x - x, e.y - y) < 74)) continue;
+    const toward = Math.atan2(p.y - y, p.x - x);
+    world.enemies.push(stagedFoe(world, kind, x, y, Math.cos(toward) * st.speed * 0.6, Math.sin(toward) * st.speed * 0.6));
+  }
+}
+
+// Top the boss's escorts up to three, placed around the hull the way its own
+// summon move releases them.
+function stageEscorts(world, boss) {
+  const kinds = ['mini', 'stinger', 'mini'];
+  const spots = [
+    { dx: 96, dy: -52 },
+    { dx: -88, dy: 62 },
+    { dx: 24, dy: 104 },
+  ];
+  let have = world.enemies.filter((e) => e.kind !== 'boss').length;
+  for (let i = 0; have < 3 && i < spots.length; i++, have++) {
+    const st = STAGED_STATS[kinds[i % kinds.length]];
+    const x = clampToArena(boss.x + spots[i].dx, ARENA.wall + st.radius + 4, ARENA.width - ARENA.wall - st.radius - 4);
+    const y = clampToArena(boss.y + spots[i].dy, ARENA.wall + st.radius + 4, ARENA.height - ARENA.wall - st.radius - 4);
+    world.enemies.push(stagedFoe(world, kinds[i % kinds.length], x, y, 0, 0));
+  }
+}
+
+// A stream of the player's own shots already on their way to the target, laid
+// along the line the ship is aiming down.
+function stageBulletStream(world, target) {
+  const p = world.player;
+  const dx = target.x - p.x;
+  const dy = target.y - p.y;
+  const d = Math.hypot(dx, dy);
+  if (d < 1) return;
+  const ux = dx / d;
+  const uy = dy / d;
+  for (const f of [0.3, 0.48, 0.66, 0.84]) {
+    world.bullets.push({
+      x: p.x + dx * f,
+      y: p.y + dy * f,
+      vx: ux * PLAYER.bulletSpeed,
+      vy: uy * PLAYER.bulletSpeed,
+      life: PLAYER.bulletLife,
+      radius: 3.4,
+    });
+  }
+}
+
+function stagePlay(seed) {
+  const world = busiestMoment(seed, 40) ?? busiestMoment(seed + 1000, 40);
+  if (!world || world.state !== GameState.PLAYING) return stagePlay(seed + 31);
+  // The frame should read as a rampage in full swing: a levelled spread cannon
+  // in hand and the swarm pressed in from every side.
+  world.weapon = { kind: 'spread', level: 2, timeLeft: 12 };
+  stageReinforcements(world, 9);
+  // Let the simulation itself fire the spread fan and carry the new foes a few
+  // steps in, so every tracer and drift in the frozen frame is the game's own.
+  for (let i = 0; i < 9; i++) stepWorld(world, botInput(world), 1 / 60);
+  if (world.state !== GameState.PLAYING) return stagePlay(seed + 31);
+  // Dress the frame: foes blowing up near the action, floating scores, a live
+  // ×4 combo, the shield ring up, and a power-up waiting on the field.
+  const p = world.player;
+  const byRange = world.enemies
     .filter((e) => Math.hypot(e.x - p.x, e.y - p.y) < 340)
-    .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y))[0];
-  const foe = near ?? world.enemies[0];
+    .sort((a, b) => Math.hypot(a.x - p.x, a.y - p.y) - Math.hypot(b.x - p.x, b.y - p.y));
+  const foe = byRange[0] ?? world.enemies[0];
   if (foe) {
     stageExplosion(world, foe.x, foe.y, '#ffb84d');
     addScoreText(world, foe.x, foe.y - 22, '+140', '#dfe9ff', 15);
   }
-  world.combo = Math.max(world.combo, 12);
+  const second = byRange[1];
+  if (second) addScoreText(world, second.x, second.y - 20, '+70', '#dfe9ff', 13);
+  world.combo = Math.max(world.combo, 22);
   world.comboTimer = 2.2;
-  world.mult = Math.max(world.mult, 2);
+  world.mult = Math.max(world.mult, 4);
   world.shield = true;
-  world.pickups.push({ x: p.x + 96, y: p.y - 56, kind: 'spread', radius: 10, life: 9, t: 1 });
+  world.pickups.push({
+    x: clampToArena(p.x + 96, ARENA.wall + 16, ARENA.width - ARENA.wall - 16),
+    y: clampToArena(p.y - 56, ARENA.wall + 16, ARENA.height - ARENA.wall - 16),
+    kind: 'rapid',
+    radius: 10,
+    life: 9,
+    t: 1,
+  });
   world.banner = null;
   world.shake = 0;
   world.flash = 0;
@@ -138,21 +261,26 @@ function stageBoss(seed) {
   simBot(world, 6.5);
   const boss = world.enemies.find((e) => e.kind === 'boss');
   if (!boss || world.state !== GameState.PLAYING) return stageBoss(seed + 77);
-  // Freeze mid-burst: trigger one more ring so the frame is full of danger,
-  // then let the boss's hit-flash settle so its red hull reads in the shot.
+  // Frame the duel mid-arena, every time: the boss whole in the upper right,
+  // the ship below-left facing it, and the fight already joined — the hull
+  // worn to just over half, escorts out, and a stream of the ship's shots
+  // already on their way.
+  boss.x = 618;
+  boss.y = 268;
+  boss.hp = Math.round(boss.maxHp * 0.55);
+  world.player.x = 356;
+  world.player.y = 392;
+  world.player.vx = 0;
+  world.player.vy = 0;
+  world.player.aimAngle = Math.atan2(boss.y - world.player.y, boss.x - world.player.x);
+  stageEscorts(world, boss);
+  stageBulletStream(world, boss);
+  // Freeze mid-burst: trigger one more ring around the framed boss and give
+  // it a few steps to expand into the air, then let the boss's hit-flash
+  // settle so its red hull reads in the shot.
   boss.attackTimer = 0;
-  stepWorld(world, botInput(world), 1 / 60);
-  stepWorld(world, botInput(world), 1 / 60);
+  for (let i = 0; i < 7; i++) stepWorld(world, botInput(world), 1 / 60);
   boss.flash = 0.1;
-  // If the duel drifted into a corner, restage it mid-arena for the shot: the
-  // boss framed whole, the ship facing it, its bullet ring still in the air.
-  if (boss.x < 210 || boss.x > 750 || boss.y < 180 || boss.y > 470) {
-    boss.x = 618;
-    boss.y = 268;
-    world.player.x = 356;
-    world.player.y = 392;
-    world.player.aimAngle = Math.atan2(boss.y - world.player.y, boss.x - world.player.x);
-  }
   world.banner = null;
   world.shake = 0;
   world.flash = 0;

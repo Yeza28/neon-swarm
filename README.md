@@ -32,8 +32,8 @@ mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 ## Layout
 
 - `main.ts` — the entrypoint the grader runs (Node 22): hands in `game/` and `screenshots/` with the vendored dossier library.
-- `game/` — the playable game as static files: `index.html` and ES modules under `src/` (`world.js` is the whole simulation, `render.js` the canvas art, `audio.js` the Web Audio synth, `input.js`, `shots.js`, `main.js`).
-- `screenshots/` — the four entry screenshots, staged deterministically by `game/src/shots.js` (`?shot=start|play|boss|end&seed=N`, see `shots.json`).
+- `game/` — the playable game as static files: `index.html` and ES modules under `src/` (`world.js` is the whole simulation, `render.js` the canvas art — the nebula, grid and arena wall are pre-rendered once into a backdrop so a frame is one blit plus the moving pieces — `audio.js` the Web Audio synth, `input.js`, `shots.js`, `main.js`).
+- `screenshots/` — the four entry screenshots, staged deterministically by `game/src/shots.js` (`?shot=start|play|boss|end&seed=N`, see `shots.json`): the action scene replays a seeded run to its busiest swarm moment and the boss scene frames the Dreadnought duel mid-fight.
 - `tests/world.test.mjs` — headless checks of the simulation: `node tests/world.test.mjs`.
 - `vendor/makefun-game.ts` — make.fun's dossier library, vendored unchanged.
 

@@ -1,7 +1,9 @@
 // Neon Swarm — the canvas renderer. Draws the world the simulation hands it:
-// a deep-space arena with a parallax starfield and grid, neon-glow ships and
-// foes, particles, the HUD, wave banners, and the title / pause / game-over
-// screens. Pure presentation: it reads world state and never changes it.
+// a deep-space arena with a nebula wash, a twinkling starfield and a grid,
+// neon-glow ships and foes, particles, the HUD, wave banners, and the title /
+// pause / game-over screens. The static arena is pre-rendered once into an
+// offscreen backdrop, so a frame costs one blit plus the moving pieces. Pure
+// presentation: it reads world state and never changes it.
 
 import { ARENA, PLAYER, COLORS } from './config.js';
 import { GameState, colorOf } from './world.js';
@@ -14,6 +16,7 @@ export function createRenderer(canvas) {
   const ctx = canvas.getContext('2d');
   const stars = makeStars();
   const vignette = makeVignette(ctx);
+  const backdrop = makeBackdrop();
 
   function draw(world, opts = {}) {
     ctx.save();
@@ -21,7 +24,7 @@ export function createRenderer(canvas) {
       const s = world.shake;
       ctx.translate((Math.random() - 0.5) * s, (Math.random() - 0.5) * s);
     }
-    drawArena(ctx, stars, world.time);
+    drawArena(ctx, backdrop, stars, world.time);
     drawPickups(ctx, world);
     for (const e of world.enemies) drawEnemy(ctx, e, world.time);
     if (world.state !== GameState.TITLE) drawPlayer(ctx, world);
@@ -74,40 +77,73 @@ function makeVignette(ctx) {
   return c;
 }
 
-function drawArena(ctx, stars, time) {
-  const bg = ctx.createLinearGradient(0, 0, 0, H);
+// The static arena — base gradient, nebula wash, grid and wall frame — is
+// painted once into an offscreen canvas (padded by PAD so the screen shake
+// never exposes an unpainted edge) and blitted each frame; only the twinkling
+// stars are drawn live. Same picture, a fraction of the per-frame cost.
+const BACKDROP_PAD = 20;
+
+function makeBackdrop() {
+  const c = document.createElement('canvas');
+  c.width = W + BACKDROP_PAD * 2;
+  c.height = H + BACKDROP_PAD * 2;
+  const g = c.getContext('2d');
+  g.translate(BACKDROP_PAD, BACKDROP_PAD);
+
+  const bg = g.createLinearGradient(0, 0, 0, H);
   bg.addColorStop(0, '#070818');
   bg.addColorStop(0.55, COLORS.bg);
   bg.addColorStop(1, '#0a0618');
-  ctx.fillStyle = bg;
-  ctx.fillRect(-20, -20, W + 40, H + 40);
+  g.fillStyle = bg;
+  g.fillRect(-BACKDROP_PAD, -BACKDROP_PAD, W + BACKDROP_PAD * 2, H + BACKDROP_PAD * 2);
+
+  // Nebula: broad, soft colour fields in the game's own palette, so the dark
+  // between the grid lines has depth instead of flat black.
+  const nebulae = [
+    { x: W * 0.22, y: H * 0.26, r: 330, color: 'rgba(46, 42, 118, 0.34)' },
+    { x: W * 0.82, y: H * 0.68, r: 360, color: 'rgba(96, 34, 128, 0.26)' },
+    { x: W * 0.68, y: H * 0.12, r: 240, color: 'rgba(16, 92, 116, 0.20)' },
+    { x: W * 0.12, y: H * 0.86, r: 260, color: 'rgba(128, 28, 62, 0.18)' },
+  ];
+  for (const n of nebulae) {
+    const grad = g.createRadialGradient(n.x, n.y, 0, n.x, n.y, n.r);
+    grad.addColorStop(0, n.color);
+    grad.addColorStop(1, 'rgba(0, 0, 0, 0)');
+    g.fillStyle = grad;
+    g.fillRect(n.x - n.r, n.y - n.r, n.r * 2, n.r * 2);
+  }
+
+  g.strokeStyle = COLORS.grid;
+  g.lineWidth = 1;
+  g.beginPath();
+  for (let x = ARENA.wall; x <= W - ARENA.wall; x += 48) {
+    g.moveTo(x, ARENA.wall);
+    g.lineTo(x, H - ARENA.wall);
+  }
+  for (let y = ARENA.wall; y <= H - ARENA.wall; y += 48) {
+    g.moveTo(ARENA.wall, y);
+    g.lineTo(W - ARENA.wall, y);
+  }
+  g.stroke();
+
+  // The arena wall: a bright double frame the action reads against.
+  g.strokeStyle = 'rgba(87, 247, 255, 0.5)';
+  g.lineWidth = 2;
+  g.strokeRect(ARENA.wall - 6, ARENA.wall - 6, W - (ARENA.wall - 6) * 2, H - (ARENA.wall - 6) * 2);
+  g.strokeStyle = 'rgba(87, 247, 255, 0.14)';
+  g.lineWidth = 7;
+  g.strokeRect(ARENA.wall - 6, ARENA.wall - 6, W - (ARENA.wall - 6) * 2, H - (ARENA.wall - 6) * 2);
+  return c;
+}
+
+function drawArena(ctx, backdrop, stars, time) {
+  ctx.drawImage(backdrop, -BACKDROP_PAD, -BACKDROP_PAD);
 
   for (const s of stars) {
     const a = 0.35 + 0.3 * Math.sin(time * 1.4 + s.tw) * s.depth;
     ctx.fillStyle = `rgba(190, 210, 255, ${a.toFixed(3)})`;
     ctx.fillRect(s.x, s.y, s.r, s.r);
   }
-
-  ctx.strokeStyle = COLORS.grid;
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  for (let x = ARENA.wall; x <= W - ARENA.wall; x += 48) {
-    ctx.moveTo(x, ARENA.wall);
-    ctx.lineTo(x, H - ARENA.wall);
-  }
-  for (let y = ARENA.wall; y <= H - ARENA.wall; y += 48) {
-    ctx.moveTo(ARENA.wall, y);
-    ctx.lineTo(W - ARENA.wall, y);
-  }
-  ctx.stroke();
-
-  // The arena wall: a bright double frame the action reads against.
-  ctx.strokeStyle = 'rgba(87, 247, 255, 0.5)';
-  ctx.lineWidth = 2;
-  ctx.strokeRect(ARENA.wall - 6, ARENA.wall - 6, W - (ARENA.wall - 6) * 2, H - (ARENA.wall - 6) * 2);
-  ctx.strokeStyle = 'rgba(87, 247, 255, 0.14)';
-  ctx.lineWidth = 7;
-  ctx.strokeRect(ARENA.wall - 6, ARENA.wall - 6, W - (ARENA.wall - 6) * 2, H - (ARENA.wall - 6) * 2);
 }
 
 function polygon(ctx, x, y, radius, sides, rotation) {
